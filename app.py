@@ -139,8 +139,123 @@ def load_sheets(file_bytes: bytes) -> dict[str, pd.DataFrame]:
     return sheets
  
  
-def merge_sheets(sheets: dict, selected: list, col_map: dict) -> pd.DataFrame:
-    """Mescla abas selecionadas usando o mapeamento de colunas."""
+def extract_scales(sheets: dict, selected: list, col_map: dict) -> pd.DataFrame:
+    """Extrai escalas únicas do arquivo do cliente."""
+    scale_col = col_map.get("escala", "")
+    # Cols de descrição de pontos da escala (índices fixos após o número)
+    DESC_SYNONYMS = ["descrição do primeiro", "descrição do segundo", "descrição do terceiro",
+                     "descrição do quarto", "descrição do quinto", "duplique"]
+    scale_data = {}  # num -> {min, max, desc_1..N}
+ 
+    for name in selected:
+        df_raw = sheets[name]
+        headers = list(df_raw.columns)
+        headers_l = [h.lower() for h in headers]
+ 
+        # Achar colunas de descrição de pontos
+        desc_cols = [headers[i] for i, h in enumerate(headers_l)
+                     if any(s in h for s in DESC_SYNONYMS)]
+ 
+        for _, row in df_raw.iterrows():
+            num = str(row.get(scale_col, "") if scale_col and scale_col in df_raw.columns else "").strip()
+            if not num:
+                continue
+            descs = [str(row.get(c, "")).strip() for c in desc_cols if str(row.get(c, "")).strip()]
+            if num not in scale_data:
+                scale_data[num] = {"descs": descs or []}
+            elif descs and not scale_data[num]["descs"]:
+                scale_data[num]["descs"] = descs
+ 
+    if not scale_data:
+        return pd.DataFrame(columns=["escala", "min", "max"] + [f"descrição_{i}" for i in range(1, 6)])
+ 
+    rows = []
+    for num, data in sorted(scale_data.items(), key=lambda x: (float(x[0]) if x[0].replace(".", "").isdigit() else x[0])):
+        descs = data["descs"]
+        n = len(descs)
+        row = {"escala": num, "min": descs[0] if n > 0 else "", "max": descs[-1] if n > 0 else ""}
+        for i, d in enumerate(descs, 1):
+            row[f"descrição_{i}"] = d
+        rows.append(row)
+    return pd.DataFrame(rows)
+ 
+ 
+def dedup_blocks(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    """
+    Resolve blocos duplicados:
+    - Mesmo nome + mesmas perguntas → mantém um só (mescla, remove duplicatas)
+    - Mesmo nome + perguntas diferentes → renomeia com sufixo da aba de origem
+    Retorna df limpo e lista de mensagens do que foi feito.
+    """
+    messages = []
+    from difflib import SequenceMatcher
+ 
+    # Agrupa por nome de bloco
+    blocos = df["question_set"].unique()
+    name_groups = {}
+    for b in blocos:
+        mask = df["question_set"] == b
+        abas = df[mask]["_sheet"].unique()
+        if len(abas) <= 1:
+            continue
+        # Pega perguntas por aba
+        pergs_por_aba = {}
+        for aba in abas:
+            pergs = set(df[(df["question_set"] == b) & (df["_sheet"] == aba)]["pergunta"].str.strip())
+            pergs_por_aba[aba] = pergs
+        name_groups[b] = pergs_por_aba
+ 
+    rows_to_drop = []
+    renames = {}  # (bloco, aba) -> novo nome
+ 
+    for bloco, pergs_por_aba in name_groups.items():
+        abas = list(pergs_por_aba.keys())
+        # Verificar se todas as abas têm perguntas idênticas
+        base = pergs_por_aba[abas[0]]
+        all_identical = all(pergs_por_aba[a] == base for a in abas[1:])
+ 
+        if all_identical:
+            # Mescla: mantém só da primeira aba, dropa o resto
+            keep_aba = abas[0]
+            for aba in abas[1:]:
+                idxs = df[(df["question_set"] == bloco) & (df["_sheet"] == aba)].index.tolist()
+                rows_to_drop.extend(idxs)
+            messages.append(f'✓ **"{bloco}"** era idêntico em {len(abas)} abas → mesclado em um único bloco.')
+        else:
+            # Perguntas diferentes → renomeia com sufixo da aba
+            for aba in abas:
+                novo = f"{bloco} ({aba})"
+                renames[(bloco, aba)] = novo
+            messages.append(f'⚠ **"{bloco}"** tinha perguntas diferentes em {len(abas)} abas → renomeado com sufixo da aba.')
+ 
+    # Aplicar drops
+    df = df.drop(index=rows_to_drop).reset_index(drop=True)
+ 
+    # Aplicar renames
+    def apply_rename(row):
+        key = (row["question_set"], row["_sheet"])
+        return renames.get(key, row["question_set"])
+    if renames:
+        df["question_set"] = df.apply(apply_rename, axis=1)
+ 
+    # Detectar nomes muito parecidos (fuzzy) entre blocos diferentes
+    from difflib import SequenceMatcher
+    blocos_finais = list(df["question_set"].unique())
+    similares = []
+    for i, b1 in enumerate(blocos_finais):
+        for b2 in blocos_finais[i+1:]:
+            ratio = SequenceMatcher(None, b1.lower(), b2.lower()).ratio()
+            if ratio > 0.85:
+                similares.append((b1, b2, round(ratio * 100)))
+    if similares:
+        for b1, b2, pct in similares:
+            messages.append(f'⚠ Blocos muito parecidos ({pct}% similares): **"{b1}"** e **"{b2}"** — verifique se deveriam ser o mesmo.')
+ 
+    return df, messages
+ 
+ 
+def merge_sheets(sheets: dict, selected: list, col_map: dict) -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
+    """Mescla abas, deduplica blocos e extrai escalas. Retorna (df_perguntas, df_escalas, mensagens)."""
     parts = []
     for name in selected:
         df_raw = sheets[name]
@@ -151,21 +266,28 @@ def merge_sheets(sheets: dict, selected: list, col_map: dict) -> pd.DataFrame:
             else:
                 rec[field] = ""
         part = pd.DataFrame(rec)
-        # Normaliza booleanos
         for f in ("opcional", "aberta"):
             if f in part.columns:
                 part[f] = part[f].apply(norm_bool)
         parts.append(part)
+ 
     if not parts:
-        return pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame(), []
+ 
     df = pd.concat(parts, ignore_index=True)
-    # Remove linhas completamente vazias
     key_cols = [c for c in ["question_set", "pergunta"] if c in df.columns]
-    df = df[df[key_cols].apply(lambda r: any(str(v).strip() for v in r), axis=1)]
-    return df
+    df = df[df[key_cols].apply(lambda r: any(str(v).strip() for v in r), axis=1)].copy()
+ 
+    # Deduplicar blocos
+    df, messages = dedup_blocks(df)
+ 
+    # Extrair escalas
+    df_escalas = extract_scales(sheets, selected, col_map)
+ 
+    return df, df_escalas, messages
  
  
-def build_export(df: pd.DataFrame) -> bytes:
+def build_export(df: pd.DataFrame, df_escalas: pd.DataFrame | None = None) -> bytes:
     out = io.BytesIO()
     export_df = df.copy()
     col_rename = {"min_caracters": "min caracters", "max_caracters": "max caracters", "definicao": "definição"}
@@ -173,19 +295,22 @@ def build_export(df: pd.DataFrame) -> bytes:
     keep = [c for c in OUTPUT_COLS if c in export_df.columns]
     export_df = export_df[keep]
  
-    # Escalas únicas (placeholder)
-    escalas = sorted(set(
-        v for v in df.get("escala", pd.Series()).dropna().unique()
-        if str(v).strip()
-    ), key=lambda x: (float(x) if str(x).replace(".","",1).isdigit() else x))
- 
-    with pd.ExcelWriter(out, engine="openpyxl") as writer:
-        export_df.to_excel(writer, sheet_name="Competências e Perguntas", index=False)
+    # Escalas: usa as extraídas do arquivo, ou gera placeholder
+    if df_escalas is not None and not df_escalas.empty:
+        esc_df = df_escalas.copy()
+    else:
+        escalas = sorted(set(
+            v for v in df.get("escala", pd.Series()).dropna().unique()
+            if str(v).strip()
+        ), key=lambda x: (float(x) if str(x).replace(".","",1).isdigit() else x))
         escala_rows = [[str(e), "", ""] + [""] * 5 for e in escalas]
         esc_df = pd.DataFrame(
             escala_rows,
             columns=["escala", "min", "max"] + [f"descrição_{i}" for i in range(1, 6)],
         )
+ 
+    with pd.ExcelWriter(out, engine="openpyxl") as writer:
+        export_df.to_excel(writer, sheet_name="Competências e Perguntas", index=False)
         esc_df.to_excel(writer, sheet_name="Escalas", index=False)
  
         # Formatação básica das colunas
@@ -207,6 +332,8 @@ def init_state():
         "selected_sheets": [],
         "col_map": {},
         "df": None,            # df processado + validado
+        "df_escalas": None,    # escalas extraídas
+        "dedup_messages": [],  # mensagens de deduplicação
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -237,8 +364,8 @@ with st.sidebar:
     if ss.step > 1:
         st.divider()
         if st.button("↺ Recomeçar", use_container_width=True):
-            for k in ["file_bytes","file_name","sheets","selected_sheets","col_map","df"]:
-                ss[k] = [] if k == "selected_sheets" else ({} if k in ("sheets","col_map") else None)
+            for k in ["file_bytes","file_name","sheets","selected_sheets","col_map","df","df_escalas","dedup_messages"]:
+                ss[k] = [] if k in ("selected_sheets","dedup_messages") else ({} if k in ("sheets","col_map") else None)
             ss.step = 1
             st.rerun()
  
@@ -350,9 +477,11 @@ elif ss.step == 2:
     with col_fwd:
         if st.button("Processar e validar →", type="primary", disabled=bool(missing_req)):
             with st.spinner("Mesclando abas e validando..."):
-                df = merge_sheets(ss.sheets, ss.selected_sheets, ss.col_map)
+                df, df_escalas, dedup_msgs = merge_sheets(ss.sheets, ss.selected_sheets, ss.col_map)
                 df = revalidate(df)
                 ss.df = df
+                ss.df_escalas = df_escalas
+                ss.dedup_messages = dedup_msgs
             ss.step = 3
             st.rerun()
  
@@ -377,6 +506,21 @@ elif ss.step == 3:
     m2.metric("❌ Erros", n_err, delta=f"-{n_err}" if n_err else None, delta_color="inverse")
     m3.metric("⚠️ Avisos", n_warn)
     m4.metric("✅ OK", n_ok)
+ 
+    # Mensagens de deduplicação de blocos
+    if ss.dedup_messages:
+        with st.expander(f"🔀 Blocos processados ({len(ss.dedup_messages)} ocorrências)", expanded=True):
+            for msg in ss.dedup_messages:
+                st.markdown(msg)
+ 
+    # Escalas extraídas
+    if ss.df_escalas is not None and not ss.df_escalas.empty:
+        with st.expander(f"⚖️ {len(ss.df_escalas)} escala(s) extraída(s) do arquivo"):
+            st.dataframe(ss.df_escalas, use_container_width=True, hide_index=True)
+            st.caption("As descrições dos pontos serão incluídas no export se estiverem preenchidas no arquivo de origem.")
+    else:
+        with st.expander("⚖️ Escalas não encontradas"):
+            st.warning("Nenhuma escala detectada automaticamente. Verifique se a coluna 'escala' foi mapeada corretamente no passo 2.")
  
     st.divider()
  
@@ -634,7 +778,7 @@ elif ss.step == 4:
  
     st.divider()
  
-    xlsx_bytes = build_export(df)
+    xlsx_bytes = build_export(df, ss.df_escalas)
     st.download_button(
         label="⬇️ Baixar Base_Perguntas-2.xlsx",
         data=xlsx_bytes,
@@ -651,7 +795,7 @@ elif ss.step == 4:
             ss.step = 3; st.rerun()
     with col_novo:
         if st.button("↺ Novo arquivo"):
-            for k in ["file_bytes","file_name","sheets","selected_sheets","col_map","df"]:
-                ss[k] = [] if k == "selected_sheets" else ({} if k in ("sheets","col_map") else None)
+            for k in ["file_bytes","file_name","sheets","selected_sheets","col_map","df","df_escalas","dedup_messages"]:
+                ss[k] = [] if k in ("selected_sheets","dedup_messages") else ({} if k in ("sheets","col_map") else None)
             ss.step = 1
             st.rerun()
