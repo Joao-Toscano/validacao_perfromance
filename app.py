@@ -23,14 +23,21 @@ st.set_page_config(
 # ─── CSS custom ──────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-    .block-container { padding-top: 1.5rem; padding-bottom: 2rem; }
+    .block-container { padding-top: 3.5rem !important; padding-bottom: 2rem; }
     .stTabs [data-baseweb="tab"] { font-size: 0.85rem; }
-    div[data-testid="stMetric"] { background: #f8f9fb; border-radius: 8px; padding: 12px 16px; border: 1px solid #e8eaf0; }
-    .badge-err  { background:#fdecea; color:#c0392b; border-radius:4px; padding:2px 8px; font-size:11px; font-weight:600; }
-    .badge-warn { background:#fef3e2; color:#b45309; border-radius:4px; padding:2px 8px; font-size:11px; font-weight:600; }
-    .badge-ok   { background:#edfaf3; color:#1a7f5a; border-radius:4px; padding:2px 8px; font-size:11px; font-weight:600; }
+    div[data-testid="stMetric"] {
+        background: rgba(255,255,255,0.05);
+        border-radius: 8px;
+        padding: 12px 16px;
+        border: 1px solid rgba(255,255,255,0.12);
+    }
+    div[data-testid="stMetricValue"] { font-size: 1.6rem !important; }
+    div[data-testid="stMetricLabel"] { opacity: 0.7; }
+    .badge-err  { background:rgba(192,57,43,0.2); color:#ff7675; border-radius:4px; padding:2px 8px; font-size:11px; font-weight:600; }
+    .badge-warn { background:rgba(230,126,34,0.2); color:#fdcb6e; border-radius:4px; padding:2px 8px; font-size:11px; font-weight:600; }
+    .badge-ok   { background:rgba(39,174,96,0.2); color:#55efc4; border-radius:4px; padding:2px 8px; font-size:11px; font-weight:600; }
     .step-header { font-size:1.35rem; font-weight:700; margin-bottom:0.2rem; }
-    .step-sub { color:#666; font-size:0.9rem; margin-bottom:1.2rem; }
+    .step-sub { opacity:0.6; font-size:0.9rem; margin-bottom:1.2rem; }
     hr { margin: 1.2rem 0; }
 </style>
 """, unsafe_allow_html=True)
