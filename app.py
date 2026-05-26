@@ -1011,8 +1011,8 @@ elif ss.step == 4:
         with ce:
             if total_erros:
                 st.markdown(
-                    f'<div class="vsec v-err"><div class="vtitle">❌ {total_erros} erro(s) — obrigatório corrigir</div>'
-                    '<div class="vitem">Baixe a planilha de validação para ver todos os detalhes e corrigir na etapa de Edição.</div></div>',
+                    f'<div class="vsec v-err"><div class="vtitle">❌ {total_erros} erro(s) — revisar antes da geração</div>'
+                    '<div class="vitem">Baixe a planilha de validação para ver todos os detalhes. Você poderá avançar para configurar a rodada, mesmo mantendo pendências.</div></div>',
                     unsafe_allow_html=True
                 )
             else:
@@ -1039,7 +1039,66 @@ elif ss.step == 4:
     )
     st.caption("A planilha contém uma aba de resumo e uma aba com o detalhamento de cada ocorrência, incluindo bloco, pergunta, tipo, escala e ação sugerida.")
 
-    nav_row(back=3, fwd=5, fwd_label="Configurar rodada →", fwd_dis=bool(erros))
+    # Mostra as prévias somente quando houver menos de 10 erros.
+    # Com 10 ou mais erros, a tela permanece enxuta e o usuário corrige pela planilha.
+    if total_erros < 10:
+        st.divider()
+        st.markdown('<div class="sh">Prévia por bloco</div>', unsafe_allow_html=True)
+
+        for b in ss.blocos:
+            pergs = b["perguntas"]
+            eb, ab_ = [], []
+            for p in pergs:
+                pe, pa = val_p(p, enum)
+                eb += pe
+                ab_ += pa
+
+            badge = (
+                f'<span class="bdg b-err">{len(eb)} erro(s)</span>' if eb else
+                (f'<span class="bdg b-wrn">{len(ab_)} aviso(s)</span>' if ab_ else '<span class="bdg b-ok">OK</span>')
+            )
+
+            with st.expander(f"{b['nome']}  ·  {len(pergs)}p  {badge}", expanded=bool(eb)):
+                rows_html = ""
+                for i, p in enumerate(pergs):
+                    pe, pa = val_p(p, enum)
+                    cls = "r-err" if pe else ("r-wrn" if pa else "")
+                    st_ = "✕ " + "<br>".join(pe) if pe else ("⚠ " + "<br>".join(pa) if pa else "✓")
+                    rows_html += (
+                        f'<tr class="{cls}">'
+                        f'<td style="color:#4b5260;font-family:monospace">{i+1}</td>'
+                        f'<td>{p["texto"][:80]+("…" if len(p["texto"])>80 else "")}</td>'
+                        f'<td>{p["competencia"] or "—"}</td>'
+                        f'<td>{"Aberta" if p["aberta"]=="sim" else "Fechada"}</td>'
+                        f'<td>{p["escala"] if p["aberta"]=="não" else "—"}</td>'
+                        f'<td>{"Sim" if p["opcional"]=="sim" else "Não"}</td>'
+                        f'<td style="font-size:11px">{st_}</td></tr>'
+                    )
+                st.markdown(
+                    '<table class="ptbl"><thead><tr>'
+                    '<th>#</th><th>Pergunta</th><th>Competência</th>'
+                    '<th>Tipo</th><th>Escala</th><th>Opcional</th><th>Status</th>'
+                    '</tr></thead><tbody>' + rows_html + '</tbody></table>',
+                    unsafe_allow_html=True
+                )
+
+        st.divider()
+        st.markdown('<div class="sh">Escalas cadastradas</div>', unsafe_allow_html=True)
+        for e in ss.escalas:
+            tem = any(str(p).strip() for p in e["pontos"])
+            with st.expander(f"Escala {e['num']} — {len(e['pontos'])} ponto(s)" + (" ⚠ sem descrições" if not tem else "")):
+                if tem:
+                    prev = "".join(
+                        f'<div class="ept"><span class="en">{i+1}</span>{p or "—"}</div>'
+                        for i, p in enumerate(e["pontos"])
+                    )
+                    st.markdown(f'<div class="erow">{prev}</div>', unsafe_allow_html=True)
+                else:
+                    st.warning("Pontos de ancoragem não preenchidos.")
+    else:
+        st.info("Como há 10 ou mais erros, as prévias foram ocultadas. Use a planilha de validação para corrigir os dados.")
+
+    nav_row(back=3, fwd=5, fwd_label="Configurar rodada →", fwd_dis=False)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
