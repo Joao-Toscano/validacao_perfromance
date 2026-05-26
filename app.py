@@ -242,7 +242,7 @@ def make_e(num=None,pontos=None):
     if num is None: num = max((e["num"] for e in ss.escalas),default=0)+1
     try: num = int(float(str(num)))
     except: pass
-    return {"id":uid(),"num":num,"pontos":pontos or ["",""]}
+    return {"id":uid(),"num":int(num) if isinstance(num,float) else num,"pontos":pontos or ["",""]}
  
 # ── Session state ─────────────────────────────────────────────────────────────
 DEFS = {
@@ -319,7 +319,7 @@ def read_escalas_from_rows(rows):
                 if d and str(d).strip(): pontos.append(str(d).strip())
             if pontos:
                 num = int(min(vals)) if vals else len(escalas)+1
-                escalas.append(make_e(num=num, pontos=pontos))
+                escalas.append({"id":uid(),"num":int(num),"pontos":pontos})
     else:
         # Formato vertical
         desc_cols = [i for i,h in enumerate(header_l) if "descrição_" in h]
@@ -424,7 +424,7 @@ def run_script(cfg):
         for p in b["perguntas"]:
             rows_p.append({"question_set":b["nome"],"desc_question_set":b["desc"],
                 "competencia":p["competencia"],"pergunta":p["texto"],"opcional":p["opcional"],"aberta":p["aberta"],
-                "escala":int(float(p["escala"])) if p["aberta"]=="não" and p["escala"] else np.nan,
+                "escala":int(p["escala"]) if p["aberta"]=="não" and p["escala"] else np.nan,
                 "min caracters":int(p["min_caracters"]) if p["min_caracters"] else np.nan,
                 "max caracters":int(p["max_caracters"]) if p["max_caracters"] else np.nan,
                 "definição":p["definicao"] or np.nan})
@@ -432,7 +432,9 @@ def run_script(cfg):
  
     rows_e=[]
     for e in ss.escalas:
-        r={"escala":e["num"],
+        try: num_e = int(e["num"])
+        except: num_e = e["num"]
+        r={"escala":num_e,
            "min":float(e["pontos"][0]) if e["pontos"] and e["pontos"][0] else np.nan,
            "max":float(e["pontos"][-1]) if e["pontos"] and e["pontos"][-1] else np.nan}
         for i,pt in enumerate(e["pontos"],1): r[f"descrição_{i}"]=pt or np.nan
