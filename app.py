@@ -1,4 +1,3 @@
-
 """
 AVD — Configuração e Geração de Bases
 Fluxo: Upload → Mapeamento → Edição → Validação → Config → Geração
@@ -560,39 +559,46 @@ if ss.step == 1:
             ss.imported_file = up.name
  
             sheet_names = list(ss.raw_sheets.keys())
-            st.success(f"✓ **{up.name}** — {len(sheet_names)} aba(s) encontrada(s): {', '.join(sheet_names)}")
  
-            st.markdown('<div class="sh">Selecione as abas</div>', unsafe_allow_html=True)
+            # Separa automaticamente: "escala" no nome → escalas; resto → perguntas
+            esc_sheets  = [s for s in sheet_names if "escal" in s.lower()]
+            perg_sheets = [s for s in sheet_names if "escal" not in s.lower()]
+            ss.esc_sheet  = esc_sheets[0]  if esc_sheets  else ""
+            ss.perg_sheet = perg_sheets[0] if perg_sheets else sheet_names[0]
+ 
+            # Mostra o que foi detectado
+            st.success(f"✓ **{up.name}** lido com sucesso")
+ 
             c1, c2 = st.columns(2)
+            with c1:
+                st.markdown('<div class="sh">Abas de perguntas</div>', unsafe_allow_html=True)
+                for s in perg_sheets:
+                    n_rows = max(0, len(ss.raw_sheets[s]) - 1)
+                    st.markdown(f"📋 **{s}** — {n_rows} linha(s)")
+                if not perg_sheets:
+                    st.warning("Nenhuma aba de perguntas detectada.")
  
-            # Aba de perguntas — auto-detecta
-            def_perg = next((s for s in sheet_names if "perg" in s.lower()), sheet_names[0])
-            ss.perg_sheet = c1.selectbox("Aba de perguntas", sheet_names,
-                                          index=sheet_names.index(def_perg), key="sel_perg")
+            with c2:
+                st.markdown('<div class="sh">Aba de escalas</div>', unsafe_allow_html=True)
+                if esc_sheets:
+                    for s in esc_sheets:
+                        st.markdown(f"⚖️ **{s}**")
+                else:
+                    st.markdown("<span style='color:#6b7280;font-size:12px'>Nenhuma aba de escalas — adicione manualmente na edição.</span>",
+                                unsafe_allow_html=True)
  
-            # Aba de escalas — auto-detecta
-            esc_opts = ["(nenhuma — adicionar manualmente)"] + sheet_names
-            def_esc  = next((s for s in sheet_names if "escal" in s.lower()), "(nenhuma — adicionar manualmente)")
-            def_idx  = esc_opts.index(def_esc) if def_esc in esc_opts else 0
-            ss.esc_sheet = c2.selectbox("Aba de escalas", esc_opts,
-                                         index=def_idx, key="sel_esc")
- 
-            # Preview das colunas da aba de perguntas
-            if ss.perg_sheet and ss.perg_sheet in ss.raw_sheets:
-                headers = [str(c or "").strip() for c in ss.raw_sheets[ss.perg_sheet][0]]
-                headers_clean = [h for h in headers if h]
-                st.markdown(f'<div class="sh">Colunas detectadas em "{ss.perg_sheet}" ({len(headers_clean)} colunas)</div>',
-                            unsafe_allow_html=True)
-                # Auto-detect
+            # Auto-detect colunas da primeira aba de perguntas
+            if perg_sheets and perg_sheets[0] in ss.raw_sheets:
+                headers = [str(c or "").strip() for c in ss.raw_sheets[perg_sheets[0]][0]]
                 ss.col_map = auto_detect(headers)
                 detected = len([k for k in ss.col_map if ss.col_map[k]])
-                st.markdown(f"<span class='caption'>{detected} de {len(TARGET_FIELDS)} campos mapeados automaticamente — revise no próximo passo.</span>",
+                st.markdown("")
+                st.markdown(f"<span class='caption'>🔍 {detected} de {len(TARGET_FIELDS)} campos mapeados automaticamente a partir de **{perg_sheets[0]}** — revise no próximo passo.</span>",
                             unsafe_allow_html=True)
  
             if st.button("Continuar para mapeamento →", type="primary", key="go_map"):
-                # Carrega escalas se selecionado
-                if ss.esc_sheet and ss.esc_sheet in ss.raw_sheets:
-                    ss.escalas = read_escalas_from_rows(ss.raw_sheets[ss.esc_sheet])
+                if esc_sheets:
+                    ss.escalas = read_escalas_from_rows(ss.raw_sheets[esc_sheets[0]])
                 go(2)
  
     with tab_man:
@@ -608,17 +614,21 @@ if ss.step == 1:
 elif ss.step == 2:
     steps_nav()
     st.markdown("# Mapeamento de Colunas")
-    st.markdown(f"Arquivo: **{ss.imported_file}** · Aba: **{ss.perg_sheet}**")
-    st.markdown("Confirme quais colunas do arquivo correspondem a cada campo do sistema. "
-                "Campos marcados com <span style='color:#f87171'>✕</span> são obrigatórios.",
+    perg_sheets_2 = [s for s in ss.raw_sheets if "escal" not in s.lower()]
+    perg_ref = perg_sheets_2[0] if perg_sheets_2 else ""
+    abas_str = ", ".join(f"**{s}**" for s in perg_sheets_2)
+    st.markdown(f"Arquivo: **{ss.imported_file}** · Abas de perguntas: {abas_str}")
+    st.markdown("Confirme quais colunas correspondem a cada campo. "
+                "O mapeamento vale para todas as abas de perguntas (compartilham o mesmo cabeçalho). "
+                "Campos marcados com <span style='color:#f87171'>🔴</span> são obrigatórios.",
                 unsafe_allow_html=True)
  
-    if not ss.perg_sheet or ss.perg_sheet not in ss.raw_sheets:
-        st.error("Nenhuma aba de perguntas selecionada. Volte ao Upload.")
+    if not perg_ref or perg_ref not in ss.raw_sheets:
+        st.error("Nenhuma aba de perguntas encontrada. Volte ao Upload.")
         nav_row(back=1)
         st.stop()
  
-    headers = [str(c or "").strip() for c in ss.raw_sheets[ss.perg_sheet][0]]
+    headers = [str(c or "").strip() for c in ss.raw_sheets[perg_ref][0]]
     headers_clean = [h for h in headers if h]
     col_opts = ["— ignorar —"] + headers_clean
  
@@ -655,7 +665,7 @@ elif ss.step == 2:
  
     # Preview das primeiras linhas com o mapeamento atual
     with st.expander("👁 Preview — primeiras 5 linhas com o mapeamento atual"):
-        rows = ss.raw_sheets[ss.perg_sheet]
+        rows = ss.raw_sheets[perg_ref]
         h_idx = {h: i for i,h in enumerate(headers)}
         preview_rows = []
         for row in rows[1:6]:
@@ -682,9 +692,27 @@ elif ss.step == 2:
 # STEP 3 — Edição
 # ═══════════════════════════════════════════════════════════════════════════════
 elif ss.step == 3:
-    # Aplica mapeamento se veio do step 2
-    if ss.raw_sheets and ss.perg_sheet and ss.perg_sheet in ss.raw_sheets and ss.col_map and not ss.blocos:
-        ss.blocos, _ = apply_mapping(ss.raw_sheets[ss.perg_sheet], ss.col_map)
+    # Aplica mapeamento se veio do step 2 — mescla todas as abas de perguntas
+    perg_sheets_3 = [s for s in ss.raw_sheets if "escal" not in s.lower()]
+    if ss.raw_sheets and perg_sheets_3 and ss.col_map and not ss.blocos:
+        all_blocos, all_msgs = [], []
+        for sheet in perg_sheets_3:
+            rows = ss.raw_sheets[sheet]
+            if len(rows) < 2: continue
+            bs, ms = apply_mapping(rows, ss.col_map)
+            all_blocos.extend(bs)
+            all_msgs.extend(ms)
+        # Mescla blocos com mesmo nome e mesmas perguntas entre abas
+        bmap = {}
+        for b in all_blocos:
+            if b["nome"] not in bmap:
+                bmap[b["nome"]] = b
+            else:
+                existing_txts = {p["texto"] for p in bmap[b["nome"]]["perguntas"]}
+                for p in b["perguntas"]:
+                    if p["texto"] not in existing_txts:
+                        bmap[b["nome"]]["perguntas"].append(p)
+        ss.blocos = list(bmap.values())
  
     steps_nav()
     st.markdown("# Edição")
