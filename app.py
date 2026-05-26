@@ -361,9 +361,12 @@ def apply_mapping(rows, col_map):
                   if get_bool(row,gf)]
         if not grupos: grupos = list(GRUPOS_OPTS)
 
+        raw_esc = get(row,"escala")
+        try: raw_esc = str(int(float(raw_esc))) if raw_esc else ""
+        except: pass
         p = make_p(texto=pt, competencia=get(row,"competencia"),
                    aberta=norm_bool(get(row,"aberta") or "não"),
-                   escala=get(row,"escala"),
+                   escala=raw_esc,
                    opcional=norm_bool(get(row,"opcional") or "não"),
                    min_c=get(row,"min_caracters"), max_c=get(row,"max_caracters"),
                    definicao=get(row,"definicao"), grupos=grupos)
@@ -381,7 +384,12 @@ def apply_mapping(rows, col_map):
 # ── Validation ────────────────────────────────────────────────────────────────
 def validar():
     erros, avisos = [], []
-    enum = {str(e["num"]) for e in ss.escalas}
+    def norm_escala(v):
+        """Normaliza valor de escala para comparação: '1.0' → '1', '2' → '2'"""
+        try: return str(int(float(str(v).strip())))
+        except: return str(v).strip()
+
+    enum = {norm_escala(e["num"]) for e in ss.escalas}
     if not ss.escalas: erros.append("Nenhuma escala cadastrada.")
     if not ss.blocos:  erros.append("Nenhum bloco cadastrado.")
     seen = set()
@@ -395,17 +403,23 @@ def validar():
             if not p["texto"].strip(): erros.append(f'Pergunta vazia em "{n}".')
             if p["aberta"]=="não":
                 if not p["escala"]: avisos.append(f'Fechada sem escala em "{n}".')
-                elif p["escala"] not in enum: erros.append(f'Escala {p["escala"]} inexistente em "{n}".')
+                elif norm_escala(p["escala"]) not in enum:
+                    erros.append(f'Escala {p["escala"]} inexistente em "{n}".')
             if p["aberta"]=="sim" and not p["max_caracters"]: avisos.append(f'Aberta sem máx chars em "{n}".')
     total = sum(len(b["perguntas"]) for b in ss.blocos)
     return erros, avisos, total
+
+def norm_escala(v):
+    try: return str(int(float(str(v).strip())))
+    except: return str(v).strip()
 
 def val_p(p, enum):
     e,a=[],[]
     if not p["texto"].strip(): e.append("Texto vazio")
     if p["aberta"]=="não":
         if not p["escala"]: a.append("Sem escala")
-        elif p["escala"] not in enum: e.append(f"Escala {p['escala']} inexistente")
+        elif norm_escala(p["escala"]) not in {norm_escala(x) for x in enum}:
+            e.append(f"Escala {p['escala']} inexistente")
     if p["aberta"]=="sim" and not p["max_caracters"]: a.append("Sem máx chars")
     return e,a
 
