@@ -542,6 +542,127 @@ def run_script(cfg):
     L("✓ Todos os JSONs prontos","ok")
     return log, res
 
+
+def build_validation_report(erros, avisos, enum):
+    """Gera uma planilha Excel com todos os erros e avisos da validação."""
+    linhas = []
+
+    # Erros/avisos gerais retornados por validar()
+    for msg in erros:
+        linhas.append({
+            "Tipo": "Erro",
+            "Escopo": "Geral",
+            "Bloco": "",
+            "Nº pergunta": "",
+            "Pergunta": "",
+            "Competência": "",
+            "Tipo de pergunta": "",
+            "Escala": "",
+            "Opcional": "",
+            "Ocorrência": msg,
+            "Ação sugerida": "Corrigir o cadastro antes de avançar.",
+        })
+    for msg in avisos:
+        linhas.append({
+            "Tipo": "Aviso",
+            "Escopo": "Geral",
+            "Bloco": "",
+            "Nº pergunta": "",
+            "Pergunta": "",
+            "Competência": "",
+            "Tipo de pergunta": "",
+            "Escala": "",
+            "Opcional": "",
+            "Ocorrência": msg,
+            "Ação sugerida": "Revisar o cadastro. O aviso não impede o avanço.",
+        })
+
+    # Erros/avisos por pergunta, com contexto para facilitar correção
+    for b in ss.blocos:
+        for i, p in enumerate(b["perguntas"], start=1):
+            pe, pa = val_p(p, enum)
+            for msg in pe:
+                linhas.append({
+                    "Tipo": "Erro",
+                    "Escopo": "Pergunta",
+                    "Bloco": b.get("nome", ""),
+                    "Nº pergunta": i,
+                    "Pergunta": p.get("texto", ""),
+                    "Competência": p.get("competencia", ""),
+                    "Tipo de pergunta": "Aberta" if p.get("aberta") == "sim" else "Fechada",
+                    "Escala": p.get("escala", ""),
+                    "Opcional": "Sim" if p.get("opcional") == "sim" else "Não",
+                    "Ocorrência": msg,
+                    "Ação sugerida": "Corrigir esta pergunta no bloco indicado.",
+                })
+            for msg in pa:
+                linhas.append({
+                    "Tipo": "Aviso",
+                    "Escopo": "Pergunta",
+                    "Bloco": b.get("nome", ""),
+                    "Nº pergunta": i,
+                    "Pergunta": p.get("texto", ""),
+                    "Competência": p.get("competencia", ""),
+                    "Tipo de pergunta": "Aberta" if p.get("aberta") == "sim" else "Fechada",
+                    "Escala": p.get("escala", ""),
+                    "Opcional": "Sim" if p.get("opcional") == "sim" else "Não",
+                    "Ocorrência": msg,
+                    "Ação sugerida": "Revisar esta pergunta no bloco indicado.",
+                })
+
+    # Validação simples das escalas cadastradas
+    for e in ss.escalas:
+        tem_descricoes = any(str(p).strip() for p in e.get("pontos", []))
+        if not tem_descricoes:
+            linhas.append({
+                "Tipo": "Aviso",
+                "Escopo": "Escala",
+                "Bloco": "",
+                "Nº pergunta": "",
+                "Pergunta": "",
+                "Competência": "",
+                "Tipo de pergunta": "",
+                "Escala": e.get("num", ""),
+                "Opcional": "",
+                "Ocorrência": "Escala sem descrições nos pontos de ancoragem.",
+                "Ação sugerida": "Preencher as descrições da escala na etapa de Edição.",
+            })
+
+    df = pd.DataFrame(linhas)
+    if df.empty:
+        df = pd.DataFrame([{
+            "Tipo": "OK",
+            "Escopo": "Validação",
+            "Bloco": "",
+            "Nº pergunta": "",
+            "Pergunta": "",
+            "Competência": "",
+            "Tipo de pergunta": "",
+            "Escala": "",
+            "Opcional": "",
+            "Ocorrência": "Nenhum erro ou aviso encontrado.",
+            "Ação sugerida": "Nenhuma correção necessária.",
+        }])
+
+    resumo = pd.DataFrame([
+        {"Indicador": "Blocos", "Quantidade": len(ss.blocos)},
+        {"Indicador": "Perguntas", "Quantidade": sum(len(b["perguntas"]) for b in ss.blocos)},
+        {"Indicador": "Escalas", "Quantidade": len(ss.escalas)},
+        {"Indicador": "Erros", "Quantidade": int((df["Tipo"] == "Erro").sum())},
+        {"Indicador": "Avisos", "Quantidade": int((df["Tipo"] == "Aviso").sum())},
+    ])
+
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        resumo.to_excel(writer, index=False, sheet_name="Resumo")
+        df.to_excel(writer, index=False, sheet_name="Erros e avisos")
+        for ws in writer.book.worksheets:
+            ws.freeze_panes = "A2"
+            for col in ws.columns:
+                max_len = max(len(str(cell.value or "")) for cell in col)
+                ws.column_dimensions[col[0].column_letter].width = min(max(max_len + 2, 12), 70)
+    return buf.getvalue(), df
+
 def build_zip(res):
     buf=io.BytesIO()
     with zipfile.ZipFile(buf,'w',zipfile.ZIP_DEFLATED) as z:
@@ -867,76 +988,56 @@ elif ss.step == 4:
     erros, avisos, total_p = validar()
     enum = {str(e["num"]) for e in ss.escalas}
 
+    report_bytes, report_df = build_validation_report(erros, avisos, enum)
+    total_erros = int((report_df["Tipo"] == "Erro").sum())
+    total_avisos = int((report_df["Tipo"] == "Aviso").sum())
+
     m1,m2,m3,m4 = st.columns(4)
     m1.metric("Blocos", len(ss.blocos))
     m2.metric("Perguntas", total_p)
     m3.metric("Escalas", len(ss.escalas))
-    m4.metric("Erros", len(erros), delta=str(len(erros)) if erros else None,
-              delta_color="inverse" if erros else "off")
+    m4.metric("Erros", total_erros, delta=str(total_erros) if total_erros else None,
+              delta_color="inverse" if total_erros else "off")
 
     st.markdown("")
 
-    # Painel de status
-    if not erros and not avisos:
-        st.markdown('<div class="vsec v-ok"><div class="vtitle">✅ Tudo certo — pronto para exportar</div></div>', unsafe_allow_html=True)
+    if total_erros == 0 and total_avisos == 0:
+        st.markdown(
+            '<div class="vsec v-ok"><div class="vtitle">✅ Tudo certo — pronto para exportar</div></div>',
+            unsafe_allow_html=True
+        )
     else:
         ce, cw = st.columns(2)
         with ce:
-            if erros:
-                items = "".join(f'<div class="vitem">✕ {e}</div>' for e in erros)
-                st.markdown(f'<div class="vsec v-err"><div class="vtitle">❌ {len(erros)} erro(s) — obrigatório corrigir</div>{items}</div>', unsafe_allow_html=True)
+            if total_erros:
+                st.markdown(
+                    f'<div class="vsec v-err"><div class="vtitle">❌ {total_erros} erro(s) — obrigatório corrigir</div>'
+                    '<div class="vitem">Baixe a planilha de validação para ver todos os detalhes e corrigir na etapa de Edição.</div></div>',
+                    unsafe_allow_html=True
+                )
             else:
                 st.markdown('<div class="vsec v-ok"><div class="vtitle">✅ Sem erros</div></div>', unsafe_allow_html=True)
         with cw:
-            if avisos:
-                items = "".join(f'<div class="vitem">⚠ {a}</div>' for a in avisos)
-                st.markdown(f'<div class="vsec v-wrn"><div class="vtitle">⚠️ {len(avisos)} aviso(s)</div>{items}</div>', unsafe_allow_html=True)
+            if total_avisos:
+                st.markdown(
+                    f'<div class="vsec v-wrn"><div class="vtitle">⚠️ {total_avisos} aviso(s)</div>'
+                    '<div class="vitem">Os avisos não impedem o avanço, mas devem ser revisados.</div></div>',
+                    unsafe_allow_html=True
+                )
             else:
                 st.markdown('<div class="vsec v-ok"><div class="vtitle">✅ Sem avisos</div></div>', unsafe_allow_html=True)
 
     st.divider()
-    st.markdown('<div class="sh">Prévia por bloco</div>', unsafe_allow_html=True)
-
-    for b in ss.blocos:
-        pergs = b["perguntas"]
-        eb, ab_ = [], []
-        for p in pergs:
-            pe,pa = val_p(p,enum); eb+=pe; ab_+=pa
-        badge = f'<span class="bdg b-err">{len(eb)} erro(s)</span>' if eb else \
-                (f'<span class="bdg b-wrn">{len(ab_)} aviso(s)</span>' if ab_ else '<span class="bdg b-ok">OK</span>')
-
-        with st.expander(f"{b['nome']}  ·  {len(pergs)}p  {badge}", expanded=bool(eb)):
-            rows_html = ""
-            for i,p in enumerate(pergs):
-                pe,pa = val_p(p,enum)
-                cls = "r-err" if pe else ("r-wrn" if pa else "")
-                st_ = "✕ "+"<br>".join(pe) if pe else ("⚠ "+"<br>".join(pa) if pa else "✓")
-                rows_html += (f'<tr class="{cls}">'
-                    f'<td style="color:#4b5260;font-family:monospace">{i+1}</td>'
-                    f'<td>{p["texto"][:80]+("…" if len(p["texto"])>80 else "")}</td>'
-                    f'<td>{p["competencia"] or "—"}</td>'
-                    f'<td>{"Aberta" if p["aberta"]=="sim" else "Fechada"}</td>'
-                    f'<td>{p["escala"] if p["aberta"]=="não" else "—"}</td>'
-                    f'<td>{"Sim" if p["opcional"]=="sim" else "Não"}</td>'
-                    f'<td style="font-size:11px">{st_}</td></tr>')
-            st.markdown(
-                '<table class="ptbl"><thead><tr>'
-                '<th>#</th><th>Pergunta</th><th>Competência</th>'
-                '<th>Tipo</th><th>Escala</th><th>Opcional</th><th>Status</th>'
-                '</tr></thead><tbody>'+rows_html+'</tbody></table>',
-                unsafe_allow_html=True)
-
-    st.divider()
-    st.markdown('<div class="sh">Escalas cadastradas</div>', unsafe_allow_html=True)
-    for e in ss.escalas:
-        tem = any(str(p).strip() for p in e["pontos"])
-        with st.expander(f"Escala {e['num']} — {len(e['pontos'])} ponto(s)" + (" ⚠ sem descrições" if not tem else "")):
-            if tem:
-                prev = "".join(f'<div class="ept"><span class="en">{i+1}</span>{p or "—"}</div>'
-                               for i,p in enumerate(e["pontos"]))
-                st.markdown(f'<div class="erow">{prev}</div>', unsafe_allow_html=True)
-            else:
-                st.warning("Pontos de ancoragem não preenchidos.")
+    st.markdown('<div class="sh">Relatório de correção</div>', unsafe_allow_html=True)
+    st.download_button(
+        "⬇ Baixar planilha com erros e avisos",
+        data=report_bytes,
+        file_name="validacao_erros_avisos.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        type="primary",
+        use_container_width=True,
+    )
+    st.caption("A planilha contém uma aba de resumo e uma aba com o detalhamento de cada ocorrência, incluindo bloco, pergunta, tipo, escala e ação sugerida.")
 
     nav_row(back=3, fwd=5, fwd_label="Configurar rodada →", fwd_dis=bool(erros))
 
